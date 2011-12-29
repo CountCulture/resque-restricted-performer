@@ -24,14 +24,16 @@ describe Resque::Job do
     def self.queue
       :bar_queue
     end
+    
+    def self.after_perform_do_this(*args)
+      
+    end
   end
   
-  before do
-    Resque.redis.stubs(:setnx)
-  end
-
   describe 'reserving job from queue' do
+
     before do
+      Resque.redis.stubs(:setnx)
       Resque::Job.stubs(:next_unlocked)
     end
 
@@ -84,6 +86,7 @@ describe Resque::Job do
 
   describe 'getting next_unlocked entry from given queue' do
     before do
+      Resque.redis.stubs(:setnx)
       @queue_response = [ {"args"=>['foo'], "class"=>"PerformableObjectWithLockName"}, 
                           {"args"=>['bar'], "class"=>"PerformableObjectWithLockName"},
                           {"args"=>['baz'], "class"=>"PerformableObjectWithLockName"}
@@ -114,6 +117,9 @@ describe Resque::Job do
   end
 
   describe 'performer_lock_name from queued job' do
+    before do
+      Resque.redis.stubs(:setnx)
+    end
 
     it 'should delegate to class of queued object' do
       PerformableObjectWithLockName.expects(:performer_lock_name).returns('foobar')
@@ -128,7 +134,10 @@ describe Resque::Job do
   end
   
   describe 'lock_if_free! class method' do
-
+    before do
+      Resque.redis.stubs(:setnx)
+    end
+    
     it 'should get performer_lock_name from queued object class given arguments' do
       Resque::Job.expects(:performer_lock_name).with({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
       Resque::Job.lock_if_free!({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"}, 'baz_queue')
@@ -151,8 +160,9 @@ describe Resque::Job do
     end
   end
   
-  describe 'after_perform_clear_performed_lock' do
+  describe 'clear_performed_lock' do
     before do
+      Resque.redis.stubs(:setnx)
       @queue_name = PerformableObjectWithLockName.queue
       @queued_hash = {"args"=>['bar'], "class"=>"PerformableObjectWithLockName"}
       @another_queued_hash = {"args"=>['baz'], "class"=>"PerformableObjectWithLockName"}
@@ -172,34 +182,79 @@ describe Resque::Job do
     end
 
     it 'should remove job from queue' do
-      Resque::Job.after_perform_clear_performed_lock({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
+      Resque::Job.clear_performed_lock({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
       Resque.redis.lrem("queue:#{@queue_name}", 1, @encoded_queued_hash).must_equal 0 # should be nothing matching on list
     end
     
     it 'should not remove other jobs from queue' do
-      Resque::Job.after_perform_clear_performed_lock({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
+      Resque::Job.clear_performed_lock({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
       Resque.redis.lrem("queue:#{@queue_name}", 1, @encoded_another_queued_hash).must_equal 1 # should be nothing matching on list
     end
     
     it 'should not remove same job from other queues' do
-      Resque::Job.after_perform_clear_performed_lock({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
+      Resque::Job.clear_performed_lock({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
       Resque.redis.lrem('queue:bar_queue', 1, @encoded_queued_hash).must_equal 1 # should be nothing matching on list
     end
     
     it 'should remove lock specified by performer_lock_name' do
-      Resque::Job.after_perform_clear_performed_lock({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
+      Resque::Job.clear_performed_lock({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
       Resque.redis.get(@lock_name).must_be_nil
     end
 
     it 'should remove lock only after removing job from queue' do
       Resque.redis.stubs(:lrem).raises(Exception)
       begin
-        Resque::Job.after_perform_clear_performed_lock({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"}) 
+        Resque::Job.clear_performed_lock({"args"=>['bar'], "class"=>"PerformableObjectWithLockName"}) 
       rescue Exception => e
       end
       Resque.redis.get(@lock_name).wont_be_nil      
     end
     
+    describe "when performing" do
+      before do
+        @job = Resque::Job.new('foo', {"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
+      end
+      
+      it "should perform object" do
+        # this tests normal behaviour is still followed
+        PerformableObjectWithLockName.expects(:perform).with('bar')
+        @job.perform
+      end
+      
+      it "should should clear lock" do
+        Resque::Job.expects(:clear_performed_lock).with('args' => ['bar'], 'class' => 'PerformableObjectWithLockName')
+        @job.perform
+      end
+      
+      it "should clear lock even if problem performing object" do
+        PerformableObjectWithLockName.expects(:perform).raises("uh-oh. that wasn't supposed to happen")
+        Resque::Job.expects(:clear_performed_lock).with('args' => ['bar'], 'class' => 'PerformableObjectWithLockName')
+        begin
+          @job.perform
+        rescue Exception => e
+        end
+        
+      end
+    end
+    
   end
-
+  
+  describe "when processing job" do
+    # This is a sort of integration test, to check it all comes together, particularly the clearing of 
+    # the lock after performing
+    before do
+      Resque.push('foobaz_queue', {"args"=>['foo'], "class"=>"PerformableObjectWithLockName"})
+    end
+    
+    it "should clear lock" do
+      queue = 'foobaz_queue'
+      Resque::Job.reserve('foobaz_queue').perform
+      Resque.redis.keys.detect{ |k| k.match(/performer_lock/) }.must_be_nil
+    end
+    
+    it "should remove item from queue" do
+      Resque::Job.reserve('foobaz_queue').perform
+      Resque.pop('foobaz_queue').must_be_nil
+    end
+  end
 end

@@ -11,6 +11,7 @@ Gem::Specification.new do |s|
   s.files             = %w( README.md Rakefile LICENSE )
   s.files            += Dir.glob("lib/**/*")
   s.files            += Dir.glob("test/**/*")
+  s.require_paths     = ["lib"]
 
   s.description       = <<desc
 A Resque plugin. If you want only one instance of your job, or class,

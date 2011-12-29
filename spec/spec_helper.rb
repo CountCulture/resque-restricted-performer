@@ -9,5 +9,5 @@ require 'mocha' # needs to be required after minitest so it has stub/mock method
 
 $LOAD_PATH << File.expand_path("../lib", File.dirname(__FILE__))
 
-require 'resque/restricted_performer'
+require 'restricted_performer'
 
