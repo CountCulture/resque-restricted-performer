@@ -25,9 +25,6 @@ describe Resque::Job do
       :bar_queue
     end
     
-    def self.after_perform_do_this(*args)
-      
-    end
   end
   
   describe 'reserving job from queue' do
