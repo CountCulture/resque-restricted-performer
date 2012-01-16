@@ -243,6 +243,10 @@ describe Resque::Job do
       Resque.push('foobaz_queue', {"args"=>['foo'], "class"=>"PerformableObjectWithLockName"})
     end
     
+    after do
+      Resque.redis.flushall
+    end
+    
     it "should clear lock" do
       queue = 'foobaz_queue'
       Resque::Job.reserve('foobaz_queue').perform
@@ -253,5 +257,66 @@ describe Resque::Job do
       Resque::Job.reserve('foobaz_queue').perform
       Resque.pop('foobaz_queue').must_be_nil
     end
+  end
+  
+  describe 'when removing item from queue' do
+
+    before do
+      Resque.redis.stubs(:setnx)
+      @queued_hash = {"args"=>['bar'], "class"=>"PerformableObjectWithLockName"}
+      @another_queued_hash = {"args"=>['baz'], "class"=>"PerformableObjectWithLockName"}
+      @encoded_queued_hash =  ::MultiJson.encode(@queued_hash)
+      @encoded_another_queued_hash =  ::MultiJson.encode(@another_queued_hash)
+      # add objects onto queues
+      Resque.push('foo_queue', @queued_hash)
+      Resque.push('foo_queue', @another_queued_hash )
+      Resque.push('bar_queue', @queued_hash)
+    end
+    
+    after do
+      Resque.redis.flushall
+    end
+    
+    it 'should remove job from queue' do
+      Resque::Job.remove_item_from_queue("queue:foo_queue", @queued_hash)
+      Resque.redis.lrem("queue:foo_queue", 1, @encoded_queued_hash).must_equal 0 # should be nothing matching on list
+      Resque.redis.llen("queue:foo_queue").must_equal 1 # and should be only 1 item left (double check as prev line could get caught out by encoding differences)
+    end
+    
+    it 'should return true if removes from queue' do
+      assert Resque::Job.remove_item_from_queue("queue:foo_queue", @queued_hash)
+    end
+    
+    it "should return false if doesn't remove from queue" do
+      assert !Resque::Job.remove_item_from_queue("queue:baz_queue", @queued_hash)
+    end
+    
+    it 'should not remove other jobs from queue' do
+      Resque::Job.remove_item_from_queue("queue:foo_queue", {"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
+      assert Resque::Job.remove_item_from_queue("queue:foo_queue", @another_queued_hash)
+    end
+    
+    it 'should not remove same job from other queues' do
+      Resque::Job.remove_item_from_queue("queue:foo_queue", {"args"=>['bar'], "class"=>"PerformableObjectWithLockName"})
+      Resque.redis.lrem('queue:bar_queue', 1, @encoded_queued_hash).must_equal 1 # should be nothing matching on list
+    end
+    
+    describe 'and job encoded in different order' do
+      before do
+        encoded_v_1 = "{\"args\":[\"bar\"],\"class\":\"PerformableObjectWithLockName\"}"
+        encoded_v_2 = "{\"class\":\"PerformableObjectWithLockName\",\"args\":[\"bar\"]}"
+        Resque.redis.lpush('queue:baz_1_queue', encoded_v_1)
+        Resque.redis.lpush('queue:baz_2_queue', encoded_v_2)
+      end
+
+      it 'should still remove job' do
+        assert Resque::Job.remove_item_from_queue('queue:baz_1_queue', @queued_hash) # check works one way around
+        assert Resque::Job.remove_item_from_queue('queue:baz_2_queue', @queued_hash) # ...and then the other
+        Resque.redis.llen("queue:baz_1_queue").must_equal 0
+        Resque.redis.llen("queue:baz_2_queue").must_equal 0
+      end
+
+    end
+
   end
 end

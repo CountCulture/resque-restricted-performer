@@ -12,7 +12,7 @@ module Resque::Plugins
         lock_name = performer_lock_name(args)
         full_lock_name = "performer_lock:#{lock_name}"
         queue_name = redis.get(full_lock_name) # get queue name
-        redis.lrem("queue:#{queue_name}", 1, encode(args)) # remove from queue
+        remove_item_from_queue("queue:#{queue_name}", args) # remove from queue
         redis.del(full_lock_name) # release lock
       end
 
@@ -39,6 +39,18 @@ module Resque::Plugins
           "#{job_attributes['class']}_#{job_attributes['args'].join('_')}"
         end
       end
+      
+      def remove_item_from_queue(queue, args)
+        encoded_args = encode(args)
+        result = redis.lrem(queue, 1, encoded_args)
+        if result == 1  
+          true
+        else
+          alt_encoded_args = "{#{encoded_args.gsub(/[\{\}]/,'').split(',').reverse.join(',')}}" #try different order
+          redis.lrem(queue, 1, alt_encoded_args) == 1
+        end
+      end
+      
     end
     
     module InstanceMethods
